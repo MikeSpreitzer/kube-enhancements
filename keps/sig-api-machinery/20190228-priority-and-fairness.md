@@ -49,6 +49,17 @@ superseded-by:
   - [Default Behavior](#default-behavior)
   - [Prometheus Metrics](#prometheus-metrics)
   - [Testing](#testing)
+  - [Observed Requests](#observed-requests)
+    - [Loopback](#loopback)
+    - [SubjectAccessReview by Aggregated API Server](#subjectaccessreview-by-aggregated-api-server)
+    - [GET by Administrator Using Kubectl](#get-by-administrator-using-kubectl)
+    - [Node Lease Update From Kubelet](#node-lease-update-from-kubelet)
+    - [Other Leases](#other-leases)
+    - [Status Update From System Controller To System Object](#status-update-from-system-controller-to-system-object)
+    - [Etcd Operator](#etcd-operator)
+    - [Garbage Collectors](#garbage-collectors)
+    - [Kube-Scheduler](#kube-scheduler)
+    - [Requests Over Insecure Port](#requests-over-insecure-port)
   - [Implementation Details/Notes/Constraints](#implementation-detailsnotesconstraints)
   - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
@@ -1047,7 +1058,273 @@ such objects would test that the workload does not crowd out the
 garbage collector.
 
 
+### Observed Requests
 
+To provide data about requests to use in designing the configuration,
+here are some observations from a running system late in the
+release 1.16 development cycle.  These are extracts from the
+kube-apiserver log file, with linebreaks and indentation added for
+readability.
+
+These are from debug log statements in an early revision of the
+implementation of this KEP, because that is the only easy source of
+the relevant request details.  Do not pay attention to the
+classification results evident in these log messages, they are not
+what is important here; what is important is the `requestInfo` and the
+`user`.
+
+#### Loopback
+
+```
+I0821 22:21:33.653353   15827 reqmgmt.go:254] Serving
+  requestInfo=&{true /apis/scheduling.k8s.io/v1/priorityclasses list
+    apis scheduling.k8s.io v1  priorityclasses   [priorityclasses]},
+  user=&{system:apiserver 19ce74c1-0ec9-49fe-86d4-76d04f3941a6
+    [system:masters] map[]},
+  fs="XXX" without delay
+```
+
+#### SubjectAccessReview by Aggregated API Server
+
+```
+I0821 18:10:25.275558    5468 reqmgmt.go:263] Serving
+  requestInfo=&{true
+    /apis/authorization.k8s.io/v1beta1/subjectaccessreviews create apis
+    authorization.k8s.io v1beta1  subjectaccessreviews
+    [subjectaccessreviews]},
+  user=&{system:serviceaccount:example-com:network-apiserver
+    24c3bc51-b22b-4144-a0fd-e449af5eb1f0
+    [system:serviceaccounts system:serviceaccounts:example-com system:authenticated]
+    map[]},
+  fs="XXX" after fair queuing
+I0821 18:10:25.275642    5468 handler.go:153] kube-aggregator: POST "/apis/authorization.k8s.io/v1beta1/subjectaccessreviews" satisfied by nonGoRestful
+I0821 18:10:25.275655    5468 pathrecorder.go:247] kube-aggregator: "/apis/authorization.k8s.io/v1beta1/subjectaccessreviews" satisfied by prefix /apis/authorization.k8s.io/v1beta1/
+I0821 18:10:25.275667    5468 handler.go:143] kube-apiserver: POST "/apis/authorization.k8s.io/v1beta1/subjectaccessreviews" satisfied by gorestful with webservice /apis/authorization.k8s.io/v1beta1
+I0821 18:10:25.276101    5468 httplog.go:90] POST /apis/authorization.k8s.io/v1beta1/subjectaccessreviews: (606.212µs) 201 [network-apiserver/v0.0.0 (linux/amd64) kubernetes/$Format 172.17.0.4:57212]
+```
+
+#### GET by Administrator Using Kubectl
+
+```
+I0821 18:10:18.612317    5468 reqmgmt.go:254] Serving
+  requestInfo=&{true
+    /apis/apiregistration.k8s.io/v1/apiservices/v1alpha1.network.example.com
+    get apis apiregistration.k8s.io v1  apiservices
+    v1alpha1.network.example.com
+    [apiservices v1alpha1.network.example.com]},
+  user=&{system:admin  [system:masters system:authenticated] map[]},
+  fs="XXX" without delay
+I0821 18:10:18.612380    5468 handler.go:143] kube-aggregator: GET "/apis/apiregistration.k8s.io/v1/apiservices/v1alpha1.network.example.com" satisfied by gorestful with webservice /apis/apiregistration.k8s.io/v1
+I0821 18:10:18.613147    5468 httplog.go:90] GET /apis/apiregistration.k8s.io/v1/apiservices/v1alpha1.network.example.com: (3.531717ms) 404 [kubectl/v1.15.3 (linux/amd64) kubernetes/2d3c76f 127.0.0.1:42946]
+```
+
+#### Node Lease Update From Kubelet
+
+```
+I0822 17:14:50.710425   32495 reqmgmt.go:263] Serving
+  requestInfo=&{true
+    /apis/coordination.k8s.io/v1/namespaces/kube-node-lease/leases/127.0.0.1
+    update apis coordination.k8s.io v1 kube-node-lease leases  127.0.0.1
+    [leases 127.0.0.1]},
+  user=&{system:node:127.0.0.1  [system:nodes system:authenticated]
+    map[]},
+  fs="XXX" after fair queuing
+I0822 17:14:50.710518   32495 handler.go:153] kube-aggregator: PUT "/apis/coordination.k8s.io/v1/namespaces/kube-node-lease/leases/127.0.0.1" satisfied by nonGoRestful
+I0822 17:14:50.710538   32495 pathrecorder.go:247] kube-aggregator: "/apis/coordination.k8s.io/v1/namespaces/kube-node-lease/leases/127.0.0.1" satisfied by prefix /apis/coordination.k8s.io/v1/
+I0822 17:14:50.710554   32495 handler.go:143] kube-apiserver: PUT "/apis/coordination.k8s.io/v1/namespaces/kube-node-lease/leases/127.0.0.1" satisfied by gorestful with webservice /apis/coordination.k8s.io/v1
+I0822 17:14:50.712244   32495 httplog.go:90] PUT /apis/coordination.k8s.io/v1/namespaces/kube-node-lease/leases/127.0.0.1?timeout=10s: (2.19908ms) 200 [hyperkube/v1.16.0 (linux/amd64) kubernetes/2c9b870 127.0.0.1:52010]
+```
+
+#### Other Leases
+
+LIST by kube-controller-manager
+```
+I0822 17:10:35.254941   32495 reqmgmt.go:263] Serving
+  requestInfo=&{true /apis/coordination.k8s.io/v1beta1/leases list
+    apis coordination.k8s.io v1beta1  leases   [leases]},
+  user=&{system:kube-controller-manager  [system:authenticated]
+    map[]},
+  fs="XXX" after fair queuing
+I0822 17:10:35.255006   32495 handler.go:153] kube-aggregator: GET "/apis/coordination.k8s.io/v1beta1/leases" satisfied by nonGoRestful
+I0822 17:10:35.255019   32495 pathrecorder.go:247] kube-aggregator: "/apis/coordination.k8s.io/v1beta1/leases" satisfied by prefix /apis/coordination.k8s.io/v1beta1/
+I0822 17:10:35.255030   32495 handler.go:143] kube-apiserver: GET "/apis/coordination.k8s.io/v1beta1/leases" satisfied by gorestful with webservice /apis/coordination.k8s.io/v1beta1
+I0822 17:10:35.255461   32495 httplog.go:90] GET /apis/coordination.k8s.io/v1beta1/leases?limit=500&resourceVersion=0: (871.927µs) 200 [hyperkube/v1.16.0 (linux/amd64) kubernetes/2c9b870/shared-informers 127.0.0.1:52000]
+```
+
+#### Status Update From System Controller To System Object
+
+```
+I0821 18:09:27.483493    5468 reqmgmt.go:263] Serving
+  requestInfo=&{true
+    /apis/apps/v1/namespaces/kube-system/deployments/kube-dns/status
+    update apis apps v1 kube-system deployments status kube-dns
+    [deployments kube-dns status]},
+  user=&{system:serviceaccount:kube-system:deployment-controller
+    d638d591-78a6-4bc5-87ad-8a36ccf96c35
+    [system:serviceaccounts system:serviceaccounts:kube-system system:authenticated]
+    map[]},
+  fs="XXX" after fair queuing
+I0821 18:09:27.483619    5468 handler.go:153] kube-aggregator: PUT "/apis/apps/v1/namespaces/kube-system/deployments/kube-dns/status" satisfied by nonGoRestful
+I0821 18:09:27.483635    5468 pathrecorder.go:247] kube-aggregator: "/apis/apps/v1/namespaces/kube-system/deployments/kube-dns/status" satisfied by prefix /apis/apps/v1/
+I0821 18:09:27.483657    5468 handler.go:143] kube-apiserver: PUT "/apis/apps/v1/namespaces/kube-system/deployments/kube-dns/status" satisfied by gorestful with webservice /apis/apps/v1
+I0821 18:09:27.485819    5468 httplog.go:90] PUT /apis/apps/v1/namespaces/kube-system/deployments/kube-dns/status: (2.708669ms) 200 [hyperkube/v1.16.0 (linux/amd64) kubernetes/99a8c8c/system:serviceaccount:kube-system:deployment-controller 127.0.0.1:42768]
+```
+
+#### Etcd Operator
+
+List relevant pods
+```
+I0821 18:32:44.148255    5468 reqmgmt.go:263] Serving
+  requestInfo=&{true /api/v1/namespaces/example-com/pods list api  v1
+    example-com pods   [pods]},
+  user=&{system:serviceaccount:example-com:default
+    086d66b6-69fa-4526-9e19-fc98828dca70
+    [system:serviceaccounts system:serviceaccounts:example-com system:authenticated]
+    map[]},
+  fs="XXX" after fair queuing
+I0821 18:32:44.148406    5468 handler.go:153] kube-aggregator: GET "/api/v1/namespaces/example-com/pods" satisfied by nonGoRestful
+I0821 18:32:44.148432    5468 pathrecorder.go:247] kube-aggregator: "/api/v1/namespaces/example-com/pods" satisfied by prefix /api/
+I0821 18:32:44.148445    5468 handler.go:143] kube-apiserver: GET "/api/v1/namespaces/example-com/pods" satisfied by gorestful with webservice /api/v1
+I0821 18:32:44.151826    5468 httplog.go:90] GET /api/v1/namespaces/example-com/pods?labelSelector=app%3Detcd%2Cetcd_cluster%3Dthe-etcd-cluster: (3.807214ms) 200 [etcd-operator/v0.0.0 (linux/amd64) kubernetes/$Format 172.17.0.3:57084]
+```
+
+Status update
+
+```
+I0821 18:32:47.939004    5468 reqmgmt.go:263] Serving
+  requestInfo=&{true
+    /api/v1/namespaces/example-com/endpoints/etcd-operator update api
+    v1 example-com endpoints  etcd-operator [endpoints etcd-operator]},
+  user=&{system:serviceaccount:example-com:default
+    086d66b6-69fa-4526-9e19-fc98828dca70
+    [system:serviceaccounts system:serviceaccounts:example-com system:authenticated]
+    map[]},
+  fs="XXX" after fair queuing
+I0821 18:32:47.939088    5468 handler.go:153] kube-aggregator: PUT "/api/v1/namespaces/example-com/endpoints/etcd-operator" satisfied by nonGoRestful
+I0821 18:32:47.939105    5468 pathrecorder.go:247] kube-aggregator: "/api/v1/namespaces/example-com/endpoints/etcd-operator" satisfied by prefix /api/
+I0821 18:32:47.939117    5468 handler.go:143] kube-apiserver: PUT "/api/v1/namespaces/example-com/endpoints/etcd-operator" satisfied by gorestful with webservice /api/v1
+I0821 18:32:47.940680    5468 httplog.go:90] PUT /api/v1/namespaces/example-com/endpoints/etcd-operator: (1.711502ms) 200 [etcd-operator/v0.0.0 (linux/amd64) kubernetes/$Format 172.17.0.3:57084]
+```
+
+#### Garbage Collectors
+
+Pod, on system pod.
+```
+I0821 18:10:34.205768    5468 reqmgmt.go:263] Serving
+  requestInfo=&{true /api/v1/nodes list api  v1  nodes   [nodes]},
+  user=&{system:serviceaccount:kube-system:pod-garbage-collector
+    25b8ae3f-5817-44eb-8e04-97b72fe589c5
+    [system:serviceaccounts system:serviceaccounts:kube-system system:authenticated]
+    map[]},
+  fs="XXX" after fair queuing
+I0821 18:10:34.205917    5468 handler.go:153] kube-aggregator: GET "/api/v1/nodes" satisfied by nonGoRestful
+I0821 18:10:34.205935    5468 pathrecorder.go:247] kube-aggregator: "/api/v1/nodes" satisfied by prefix /api/
+I0821 18:10:34.205947    5468 handler.go:143] kube-apiserver: GET "/api/v1/nodes" satisfied by gorestful with webservice /api/v1
+I0821 18:10:34.207719    5468 httplog.go:90] GET /api/v1/nodes: (2.440132ms) 200 [hyperkube/v1.16.0 (linux/amd64) kubernetes/99a8c8c/system:serviceaccount:kube-system:pod-garbage-collector 127.0.0.1:42768]
+```
+
+Generic, on system collection.
+```
+I0821 18:45:46.552359    5468 reqmgmt.go:263] Serving
+  requestInfo=&{false /apis/batch/v1 get apis       []},
+  user=&{system:serviceaccount:kube-system:generic-garbage-collector
+    23af219e-bc94-4814-aa9b-bae1aaa6d954
+    [system:serviceaccounts system:serviceaccounts:kube-system system:authenticated]
+    map[]},
+  fs="XXX" after fair queuing
+I0821 18:45:46.552487    5468 handler.go:153] kube-aggregator: GET "/apis/batch/v1" satisfied by nonGoRestful
+I0821 18:45:46.552507    5468 pathrecorder.go:240] kube-aggregator: "/apis/batch/v1" satisfied by exact match
+I0821 18:45:46.552521    5468 handler.go:143] kube-apiserver: GET "/apis/batch/v1" satisfied by gorestful with webservice /apis/batch/v1
+I0821 18:45:46.552642    5468 httplog.go:90] GET /apis/batch/v1?timeout=32s: (398.571µs) 200 [hyperkube/v1.16.0 (linux/amd64) kubernetes/99a8c8c/system:serviceaccount:kube-system:generic-garbage-collector 127.0.0.1:42768]
+```
+
+#### Kube-Scheduler
+
+LIST
+```
+I0821 18:08:48.572112    5468 reqmgmt.go:263] Serving
+  requestInfo=&{true /api/v1/persistentvolumeclaims list api  v1
+    persistentvolumeclaims   [persistentvolumeclaims]},
+  user=&{system:kube-scheduler  [system:authenticated] map[]},
+  fs="XXX" after fair queuing
+I0821 18:08:48.572211    5468 handler.go:153] kube-aggregator: GET "/api/v1/persistentvolumeclaims" satisfied by nonGoRestful
+I0821 18:08:48.572226    5468 pathrecorder.go:247] kube-aggregator: "/api/v1/persistentvolumeclaims" satisfied by prefix /api/
+I0821 18:08:48.572237    5468 handler.go:143] kube-apiserver: GET "/api/v1/persistentvolumeclaims" satisfied by gorestful with webservice /api/v1
+I0821 18:08:48.572587    5468 httplog.go:90] GET /api/v1/persistentvolumeclaims?limit=500&resourceVersion=0: (904.5µs) 200 [hyperkube/v1.16.0 (linux/amd64) kubernetes/99a8c8c/scheduler 127.0.0.1:42784]
+```
+
+WATCH
+```
+I0821 18:08:48.577984    5468 reqmgmt.go:64] Serving
+  RequestInfo=&request.RequestInfo{IsResourceRequest:true,
+    Path:"/apis/apps/v1/replicasets", Verb:"watch", APIPrefix:"apis",
+    APIGroup:"apps", APIVersion:"v1", Namespace:"",
+    Resource:"replicasets", Subresource:"", Name:"",
+    Parts:[]string{"replicasets"}},
+  user.Info=&user.DefaultInfo{Name:"system:kube-scheduler", UID:"",
+    Groups:[]string{"system:authenticated"},
+    Extra:map[string][]string(nil)}
+  as longrunning
+```
+
+Create event
+```
+I0821 18:10:43.168261    5468 reqmgmt.go:263] Serving
+  requestInfo=&{true
+    /apis/events.k8s.io/v1beta1/namespaces/example-com/events create
+    apis events.k8s.io v1beta1 example-com events   [events]},
+  user=&{system:kube-scheduler  [system:authenticated] map[]},
+  fs="XXX" after fair queuing
+```
+
+#### Requests Over Insecure Port
+
+Before fix
+```
+W0821 18:10:40.546166    5468 reqmgmt.go:56] No User found in context
+&context.valueCtx{Context:(*context.valueCtx)(0xc007c89ad0), key:0,
+  val:(*request.RequestInfo)(0xc0016afa20)}
+of request &http.Request{Method:"GET",
+  URL:(*url.URL)(0xc006f87d00), Proto:"HTTP/1.1", ProtoMajor:1,
+  ProtoMinor:1,
+  Header:http.Header{"Accept":[]string{"*/*"},
+    "User-Agent":[]string{"curl/7.58.0"}},
+  Body:http.noBody{}, GetBody:(func() (io.ReadCloser, error))(nil),
+  ContentLength:0, TransferEncoding:[]string(nil), Close:false,
+  Host:"localhost:8080", Form:url.Values(nil),
+  PostForm:url.Values(nil),
+  MultipartForm:(*multipart.Form)(nil), Trailer:http.Header(nil),
+  RemoteAddr:"127.0.0.1:41628", RequestURI:"/healthz",
+  TLS:(*tls.ConnectionState)(nil), Cancel:(<-chan struct {})(nil),
+  Response:(*http.Response)(nil), ctx:(*context.valueCtx)(0xc007c89b00)}
+I0821 18:10:40.546367    5468 handler.go:153] kube-aggregator: GET "/healthz" satisfied by nonGoRestful
+I0821 18:10:40.546386    5468 pathrecorder.go:240] kube-aggregator: "/healthz" satisfied by exact match
+I0821 18:10:40.547278    5468 httplog.go:90] GET /healthz: (1.118051ms) 200 [curl/7.58.0 127.0.0.1:41628]
+```
+
+After https://github.com/kubernetes/kubernetes/pull/81788
+```
+I0822 17:14:56.531653   32495 reqmgmt.go:252] Serving
+  requestInfo=&{false /healthz get        []},
+  user=&{system:unsecured  [system:masters system:authenticated] map[]},
+  fs="XXX" without delay
+I0822 17:14:56.531733   32495 handler.go:153] kube-aggregator: GET "/healthz" satisfied by nonGoRestful
+I0822 17:14:56.531759   32495 pathrecorder.go:240] kube-aggregator: "/healthz" satisfied by exact match
+I0822 17:14:56.532671   32495 httplog.go:90] GET /healthz: (1.066885ms) 200 [curl/7.58.0 127.0.0.1:50812]
+```
+
+```
+I0822 17:12:34.953460   32495 reqmgmt.go:252] Serving
+  requestInfo=&{true /api/v1/namespaces/foobar get api  v1 foobar
+    namespaces  foobar [namespaces foobar]},
+  user=&{system:unsecured  [system:masters system:authenticated]
+    map[]},
+  fs="XXX" without delay
+I0822 17:12:34.953573   32495 handler.go:153] kube-aggregator: GET "/api/v1/namespaces/foobar" satisfied by nonGoRestful
+I0822 17:12:34.953643   32495 pathrecorder.go:247] kube-aggregator: "/api/v1/namespaces/foobar" satisfied by prefix /api/
+I0822 17:12:34.953657   32495 handler.go:143] kube-apiserver: GET "/api/v1/namespaces/foobar" satisfied by gorestful with webservice /api/v1
+I0822 17:12:34.955024   32495 httplog.go:90] GET /api/v1/namespaces/foobar: (1.64216ms) 404 [kubectl/v0.0.0 (linux/amd64) kubernetes/$Format 127.0.0.1:50698]
+```
 
 ### Implementation Details/Notes/Constraints
 
