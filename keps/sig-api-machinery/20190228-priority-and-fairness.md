@@ -1073,6 +1073,10 @@ classification results evident in these log messages, they are not
 what is important here; what is important is the `requestInfo` and the
 `user`.
 
+| column 1 | column 2 |
+| :--: | :--: |
+| a | b |
+
 #### Loopback
 
 ```
